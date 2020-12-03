@@ -170,10 +170,16 @@ rec {
         withoutGitPlus = lib.removePrefix "git+" source;
         splitHash = lib.splitString "#" withoutGitPlus;
         splitQuestion = lib.concatMap (lib.splitString "?") splitHash;
+        maybeBranchSplited = lib.splitString "branch=" withoutGitPlus;
       in
       {
         url = builtins.head splitQuestion;
         rev = lib.last splitQuestion;
+        branch = if (lib.length maybeBranchSplited) == 1 then
+          "master"
+        else (
+          lib.head (lib.splitString "#" (lib.last maybeBranchSplited))
+        );
       };
 
     vendorSupport = { crateDir ? ./., ... }:
@@ -234,7 +240,7 @@ rec {
             src = builtins.fetchGit {
               submodules = true;
               inherit (parsed) url rev;
-              ref = attrs.branch or "master";
+              ref = parsed.branch or "master";
             };
             hash = pkgs.runCommand "hash-of-${attrs.name}" { nativeBuildInputs = [ pkgs.nix ]; } ''
               echo -n "$(nix-hash --type sha256 ${src})" > $out
@@ -246,7 +252,7 @@ rec {
           };
 
         extraHashes = lib.optionalAttrs
-          ((builtins.elemAt (builtins.splitVersion builtins.nixVersion) 0) == "3")
+          ((builtins.elemAt (builtins.splitVersion builtins.nixVersion) 0) == "2")
           (builtins.listToAttrs (map mkGitHash unhashedGitDeps));
 
         packages =
@@ -256,7 +262,11 @@ rec {
             packageById = package: { name = toPackageId package; value = package; };
             packagesById = builtins.listToAttrs (builtins.map packageById packagesWithoutLocal);
           in
-          builtins.attrValues packagesById;
+            map (p: p // (if !(p ? branch) && (sourceType p) == "git" then
+              {
+                #branch = "fix_intrisincs";
+              } else {}
+            )) (builtins.attrValues packagesById);
         packagesWithType = builtins.filter (pkg: (sourceType pkg) != null) packages;
         packagesByType = lib.groupBy sourceType packagesWithType;
 
@@ -290,18 +300,18 @@ rec {
                 let
                   parsed = parseGitSource source;
                 in
-                ''
+                builtins.trace (attrs) ''
 
               [source."${parsed.url}"]
               git = "${parsed.url}"
               rev = "${parsed.rev}"
-              ${lib.optionalString (isNull (builtins.match ".*\\?rev=[0-9a-z]{40}.*" source)) ''branch = "${attrs.branch or "master"}"''}
+              ${lib.optionalString (isNull (builtins.match ".*\\?rev=[0-9a-z]{40}.*" source)) ''branch = "${attrs.branch or parsed.branch or "master"}"''}
               replace-with = "vendored-sources"
               '';
             gitSources = packagesByType."git" or [ ];
             gitSourcesUnique = lib.unique gitSources;
             gitSourceConfigs = builtins.map gitSourceConfig gitSourcesUnique;
-            gitSourceConfigsString = lib.concatStrings gitSourceConfigs;
+            gitSourceConfigsString = lib.concatStrings (lib.unique gitSourceConfigs);
           in
           pkgs.writeText
             "vendor-config"
